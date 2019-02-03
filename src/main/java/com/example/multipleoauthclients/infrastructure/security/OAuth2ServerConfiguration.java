@@ -1,15 +1,21 @@
 package com.example.multipleoauthclients.infrastructure.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.config.annotation.configurers.ClientDetailsServiceConfigurer;
 import org.springframework.security.oauth2.config.annotation.web.configuration.AuthorizationServerConfigurerAdapter;
 import org.springframework.security.oauth2.config.annotation.web.configuration.EnableAuthorizationServer;
@@ -18,7 +24,14 @@ import org.springframework.security.oauth2.config.annotation.web.configuration.R
 import org.springframework.security.oauth2.config.annotation.web.configurers.AuthorizationServerEndpointsConfigurer;
 import org.springframework.security.oauth2.config.annotation.web.configurers.AuthorizationServerSecurityConfigurer;
 import org.springframework.security.oauth2.config.annotation.web.configurers.ResourceServerSecurityConfigurer;
+import org.springframework.security.oauth2.provider.ClientDetailsService;
+import org.springframework.security.oauth2.provider.OAuth2Authentication;
+import org.springframework.security.oauth2.provider.TokenRequest;
+import org.springframework.security.oauth2.provider.token.AuthorizationServerTokenServices;
+import org.springframework.security.oauth2.provider.token.DefaultTokenServices;
 import org.springframework.security.oauth2.provider.token.TokenStore;
+
+import java.util.Map;
 
 @Configuration
 public class OAuth2ServerConfiguration {
@@ -52,6 +65,8 @@ public class OAuth2ServerConfiguration {
     @EnableAuthorizationServer
     protected static class AuthorizationServerConfiguration extends AuthorizationServerConfigurerAdapter {
 
+        private static final Logger LOGGER = LoggerFactory.getLogger(AuthorizationServerConfiguration.class);
+
         @Autowired
         private AuthenticationManager authenticationManager;
 
@@ -63,6 +78,8 @@ public class OAuth2ServerConfiguration {
 
         @Autowired
         private TokenStore tokenStore;
+        @Autowired
+        private ClientDetailsService clientDetailsService;
 
         @Override
         public void configure(AuthorizationServerSecurityConfigurer security) throws Exception {
@@ -89,7 +106,54 @@ public class OAuth2ServerConfiguration {
         public void configure(AuthorizationServerEndpointsConfigurer endpoints) throws Exception {
             endpoints.tokenStore(tokenStore)
                      .authenticationManager(authenticationManager)
-                     .userDetailsService(userDetailsService);
+                     .userDetailsService(userDetailsService)
+                     .tokenServices(tokenServices());
+        }
+
+        @Bean
+        public AuthorizationServerTokenServices tokenServices() {
+            DefaultTokenServices tokenServices = new DefaultTokenServices();
+            tokenServices.setClientDetailsService(clientDetailsService);
+            tokenServices.setSupportRefreshToken(true);
+            tokenServices.setTokenStore(tokenStore);
+//           TODO needed if I don't use JWT? tokenServices.setTokenEnhancer();
+            tokenServices.setAuthenticationManager(authenticationManager);
+
+            return new AuthorizationServerTokenServices() {
+                @Override
+                public OAuth2AccessToken createAccessToken(OAuth2Authentication authentication) throws AuthenticationException {
+                    UsernamePasswordAuthenticationToken userAuthentication =
+                            (UsernamePasswordAuthenticationToken) authentication.getUserAuthentication();
+                    ApplicationUserDetails userDetails = (ApplicationUserDetails) userAuthentication.getPrincipal();
+
+                    Map clientDetails = (Map) userAuthentication.getDetails();
+                    String clientId = (String) clientDetails.get("client_id");
+
+                    // Post-authentication callback
+                    // TODO Validate/authenticate user and/or client
+
+                    LOGGER.info("username: {}", userDetails.getUsername());
+                    LOGGER.info("clientId: {}", clientId);
+
+                    if (userDetails.getAuthorities().contains(new SimpleGrantedAuthority("ROLE_ADMINISTRATOR"))
+                            && !clientId.equals("angular_app_id")) {
+                        LOGGER.info("ADMIN trying to log on via wrong client!");
+                        authentication.setAuthenticated(false);
+                    }
+
+                    return tokenServices.createAccessToken(authentication);
+                }
+
+                @Override
+                public OAuth2AccessToken refreshAccessToken(String refreshToken, TokenRequest tokenRequest) throws AuthenticationException {
+                    return tokenServices.refreshAccessToken(refreshToken, tokenRequest);
+                }
+
+                @Override
+                public OAuth2AccessToken getAccessToken(OAuth2Authentication authentication) {
+                    return tokenServices.getAccessToken(authentication);
+                }
+            };
         }
     }
 
